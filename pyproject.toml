@@ -1,0 +1,18 @@
+[project]
+name = "ink-stroke-predictor"
+version = "0.1.0"
+description = "Image-to-stroke prediction: maps rasterized handwritten words to stroke trajectories"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "numpy<2",
+    "pillow>=10.0",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "tqdm>=4.65",
+]
+
+[project.scripts]
+train = "train:main"
+eval = "evaluate:main"
