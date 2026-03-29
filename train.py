@@ -31,14 +31,14 @@ def make_stroke_input(trajectory):
     return torch.cat([zeros, trajectory[:, :-1, :]], dim=1)
 
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(model, loader, optimizer, device, epoch, total_epochs):
     model.train()
     total_loss = 0
     total_loc = 0
     total_pen = 0
-    n_batches = 0
+    n_batches = len(loader)
 
-    for batch in loader:
+    for step, batch in enumerate(loader):
         image = batch["image"].to(device)
         trajectory = batch["trajectory"].to(device)
         lengths = batch["length"].to(device)
@@ -57,8 +57,14 @@ def train_one_epoch(model, loader, optimizer, device):
         total_loss += loss.item()
         total_loc += loss_dict["loc_loss"].item()
         total_pen += loss_dict["pen_loss"].item()
-        n_batches += 1
 
+        print(
+            f"\r  Epoch {epoch}/{total_epochs} [{step+1}/{n_batches}] "
+            f"loss={loss.item():.4f} (loc={loss_dict['loc_loss'].item():.4f}, pen={loss_dict['pen_loss'].item():.4f})",
+            end="", flush=True,
+        )
+
+    print()  # newline after progress
     return {
         "loss": total_loss / n_batches,
         "loc_loss": total_loc / n_batches,
@@ -201,7 +207,12 @@ def main():
     parser.add_argument("--num_workers", type=int, default=0)
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Device: {device}")
 
     # Data
@@ -247,7 +258,7 @@ def main():
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
 
-        train_metrics = train_one_epoch(model, train_loader, optimizer, device)
+        train_metrics = train_one_epoch(model, train_loader, optimizer, device, epoch, args.epochs)
         val_metrics = validate(model, val_loader, device)
         scheduler.step(val_metrics["loss"])
 
