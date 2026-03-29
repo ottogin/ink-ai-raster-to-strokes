@@ -110,18 +110,17 @@ def render_trajectory(deltas: np.ndarray, width: int = 192, height: int = 64) ->
     xy = np.cumsum(deltas[:, :2], axis=0)
     pen = deltas[:, 2]
 
-    # Fit to image
+    # Fit to image (aspect-ratio-preserving, centered)
     xy_min = xy.min(axis=0)
     xy_max = xy.max(axis=0)
-    xy_range = xy_max - xy_min
-    xy_range[xy_range < 1e-6] = 1.0
+    src_w = max(xy_max[0] - xy_min[0], 1e-6)
+    src_h = max(xy_max[1] - xy_min[1], 1e-6)
 
     pad = 6
-    scale = min((width - 2 * pad) / xy_range[0], (height - 2 * pad) / xy_range[1])
-    scaled = (xy - xy_min) * scale
-    offset_x = (width - xy_range[0] * scale) / 2
-    offset_y = (height - xy_range[1] * scale) / 2
-    img_xy = scaled + np.array([offset_x, offset_y])
+    scale = min((width - 2 * pad) / src_w, (height - 2 * pad) / src_h)
+    offset_x = (width - src_w * scale) / 2
+    offset_y = (height - src_h * scale) / 2
+    img_xy = (xy - xy_min) * scale + np.array([offset_x, offset_y])
 
     img = Image.new("L", (width, height), 255)
     dr = ImageDraw.Draw(img)

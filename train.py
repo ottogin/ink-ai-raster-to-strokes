@@ -96,8 +96,8 @@ def validate(model, loader, device):
 
 
 @torch.no_grad()
-def evaluate_samples(model, loader, device, num_samples=20):
-    """Run autoregressive sampling on a few examples and compute metrics."""
+def evaluate_samples(model, loader, device, num_samples=50):
+    """Run autoregressive sampling and compute metrics."""
     model.eval()
     all_metrics = []
 
@@ -109,7 +109,9 @@ def evaluate_samples(model, loader, device, num_samples=20):
         pred_strokes, pred_lengths = model.sample(image, max_len=trajectory.shape[1])
         pred_strokes = pred_strokes.cpu().numpy()
 
-        for i in range(min(len(image), num_samples - len(all_metrics))):
+        for i in range(len(image)):
+            if len(all_metrics) >= num_samples:
+                break
             pred = pred_strokes[i, :pred_lengths[i].item()]
             target = trajectory[i, :lengths[i].item()].numpy()
             if len(pred) < 2 or len(target) < 2:
@@ -125,8 +127,23 @@ def evaluate_samples(model, loader, device, num_samples=20):
 
     avg = {}
     for key in all_metrics[0]:
-        avg[key] = float(np.mean([m[key] for m in all_metrics]))
+        values = [m[key] for m in all_metrics]
+        avg[key] = float(np.mean(values))
+        avg[f"{key}_std"] = float(np.std(values))
     return avg
+
+
+def print_eval_metrics(metrics, prefix=""):
+    if not metrics:
+        print(f"{prefix}No valid samples for evaluation")
+        return
+    print(
+        f"{prefix}"
+        f"DTW={metrics.get('dtw', 0):.4f} (±{metrics.get('dtw_std', 0):.4f}), "
+        f"Chamfer={metrics.get('chamfer', 0):.4f} (±{metrics.get('chamfer_std', 0):.4f}), "
+        f"SSIM={metrics.get('ssim', 0):.4f} (±{metrics.get('ssim_std', 0):.4f}), "
+        f"PenAcc={metrics.get('pen_accuracy', 0):.3f} (±{metrics.get('pen_accuracy_std', 0):.3f})"
+    )
 
 
 def save_checkpoint(model, optimizer, epoch, metrics, path):
@@ -177,7 +194,9 @@ def main():
     parser.add_argument("--num_mixtures", type=int, default=20)
     parser.add_argument("--num_layers", type=int, default=2)
     parser.add_argument("--val_split", type=float, default=0.1)
+    parser.add_argument("--test_split", type=float, default=0.1)
     parser.add_argument("--eval_every", type=int, default=5, help="Run sampling eval every N epochs")
+    parser.add_argument("--eval_samples", type=int, default=50, help="Number of samples for eval metrics")
     parser.add_argument("--max_samples", type=int, default=None, help="Limit dataset size (for debugging)")
     parser.add_argument("--num_workers", type=int, default=0)
     args = parser.parse_args()
@@ -186,14 +205,19 @@ def main():
     print(f"Device: {device}")
 
     # Data
-    train_loader, val_loader = create_dataloaders(
+    train_loader, val_loader, test_loader = create_dataloaders(
         args.data,
         batch_size=args.batch_size,
         val_split=args.val_split,
+        test_split=args.test_split,
         num_workers=args.num_workers,
         max_samples=args.max_samples,
     )
-    print(f"Train: {len(train_loader.dataset)} samples, Val: {len(val_loader.dataset)} samples")
+    print(
+        f"Train: {len(train_loader.dataset)} samples, "
+        f"Val: {len(val_loader.dataset)} samples, "
+        f"Test: {len(test_loader.dataset)} samples"
+    )
 
     # Model
     model = InkStrokePredictor(
@@ -241,17 +265,11 @@ def main():
             f"lr={lr:.2e}"
         )
 
-        # Sampling eval
-        if epoch % args.eval_every == 0 or epoch == args.epochs:
-            eval_metrics = evaluate_samples(model, val_loader, device, num_samples=20)
-            history["eval_metrics"].append({"epoch": epoch, **eval_metrics})
-            if eval_metrics:
-                print(
-                    f"  Eval: DTW={eval_metrics.get('dtw', 0):.4f}, "
-                    f"Chamfer={eval_metrics.get('chamfer', 0):.4f}, "
-                    f"SSIM={eval_metrics.get('ssim', 0):.4f}, "
-                    f"PenAcc={eval_metrics.get('pen_accuracy', 0):.3f}"
-                )
+        # Periodic sampling eval on val set
+        if epoch % args.eval_every == 0:
+            eval_metrics = evaluate_samples(model, val_loader, device, num_samples=args.eval_samples)
+            history["eval_metrics"].append({"epoch": epoch, "split": "val", **eval_metrics})
+            print_eval_metrics(eval_metrics, prefix="  Val eval: ")
 
         # Save best
         if val_metrics["loss"] < best_val_loss:
@@ -261,13 +279,42 @@ def main():
         # Save latest
         save_checkpoint(model, optimizer, epoch, val_metrics, output_dir / "latest.pt")
 
+    # --- Final evaluation on test set using best checkpoint ---
+    print("\n" + "=" * 60)
+    print("Final evaluation on TEST set (using best checkpoint)")
+    print("=" * 60)
+
+    best_ckpt = torch.load(output_dir / "best.pt", map_location=device)
+    model.load_state_dict(best_ckpt["model_state_dict"])
+    print(f"Loaded best checkpoint from epoch {best_ckpt['epoch']}")
+
+    # Test loss
+    test_loss = validate(model, test_loader, device)
+    print(
+        f"Test loss: {test_loss['loss']:.4f} "
+        f"(loc={test_loss['loc_loss']:.4f}, pen={test_loss['pen_loss']:.4f})"
+    )
+
+    # Test sampling metrics
+    test_eval = evaluate_samples(model, test_loader, device, num_samples=args.eval_samples)
+    print_eval_metrics(test_eval, prefix="Test metrics: ")
+
+    # Save final results
+    final_results = {
+        "best_epoch": best_ckpt["epoch"],
+        "best_val_loss": best_val_loss,
+        "test_loss": test_loss,
+        "test_metrics": test_eval,
+    }
+    history["final_test"] = final_results
+
     # Save training curves and history
     plot_training_curves(history, output_dir / "training_curves.png")
     with open(output_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
-    print(f"Checkpoints saved to {output_dir}")
+    print(f"\nTraining complete. Best val loss: {best_val_loss:.4f} (epoch {best_ckpt['epoch']})")
+    print(f"Checkpoints and results saved to {output_dir}")
 
 
 if __name__ == "__main__":

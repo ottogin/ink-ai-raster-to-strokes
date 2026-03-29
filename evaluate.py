@@ -121,14 +121,14 @@ def main():
     model.load_state_dict(checkpoint["model_state_dict"])
     print(f"Loaded checkpoint from epoch {checkpoint.get('epoch', '?')}")
 
-    # Load data (use full dataset, no split — eval on everything)
-    _, val_loader = create_dataloaders(
-        args.data, batch_size=args.batch_size, val_split=1.0,
+    # Load data — evaluate on the test split
+    _, _, test_loader = create_dataloaders(
+        args.data, batch_size=args.batch_size, val_split=0.1, test_split=0.1,
     )
-    print(f"Evaluating on {len(val_loader.dataset)} samples")
+    print(f"Evaluating on {len(test_loader.dataset)} test samples")
 
     # Run eval
-    results = run_evaluation(model, val_loader, device, num_samples=args.num_samples)
+    results = run_evaluation(model, test_loader, device, num_samples=args.num_samples)
 
     # Aggregate metrics
     metric_keys = list(results[0]["metrics"].keys())

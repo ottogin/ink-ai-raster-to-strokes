@@ -54,15 +54,27 @@ def create_dataloaders(
     npz_path: str,
     batch_size: int = 32,
     val_split: float = 0.1,
+    test_split: float = 0.1,
     num_workers: int = 0,
     max_samples: int | None = None,
+    seed: int = 42,
 ):
-    """Create train/val dataloaders from a single npz file."""
+    """Create train/val/test dataloaders from a single npz file.
+
+    Returns:
+        (train_loader, val_loader, test_loader)
+    """
     dataset = StrokeDataset(npz_path, max_samples=max_samples)
     n = len(dataset)
+    n_test = max(1, int(n * test_split))
     n_val = max(1, int(n * val_split))
-    n_train = n - n_val
-    train_ds, val_ds = torch.utils.data.random_split(dataset, [n_train, n_val])
+    n_train = n - n_val - n_test
+
+    generator = torch.Generator().manual_seed(seed)
+    train_ds, val_ds, test_ds = torch.utils.data.random_split(
+        dataset, [n_train, n_val, n_test], generator=generator,
+    )
+
     train_loader = torch.utils.data.DataLoader(
         train_ds, batch_size=batch_size, shuffle=True,
         num_workers=num_workers, collate_fn=collate_fn,
@@ -71,4 +83,8 @@ def create_dataloaders(
         val_ds, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, collate_fn=collate_fn,
     )
-    return train_loader, val_loader
+    test_loader = torch.utils.data.DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, collate_fn=collate_fn,
+    )
+    return train_loader, val_loader, test_loader
