@@ -193,7 +193,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train ink stroke predictor")
     parser.add_argument("--data", type=str, default="/Users/artemlukoyanov/Documents/Proga/Ilumni/playground/SundaiClub/weeks/inkai/ink-ai-hack-playground/notebooks/data/generated/dataset.npz", help="Path to dataset.npz")
     parser.add_argument("--output", type=str, default="checkpoints", help="Output directory")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--feature_dim", type=int, default=256)
