@@ -95,7 +95,7 @@ def visualize_predictions(results, save_path, num_show=16):
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate ink stroke predictor")
-    parser.add_argument("--data", type=str, required=True, help="Path to dataset.npz")
+    parser.add_argument("--data", type=str, default="/Users/artemlukoyanov/Documents/Proga/Ilumni/playground/SundaiClub/weeks/inkai/ink-ai-hack-playground/notebooks/data/generated/dataset.npz", help="Path to dataset.npz")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--output", type=str, default="eval_results", help="Output directory")
     parser.add_argument("--num_samples", type=int, default=50)

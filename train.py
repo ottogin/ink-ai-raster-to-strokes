@@ -185,7 +185,7 @@ def plot_training_curves(history, save_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Train ink stroke predictor")
-    parser.add_argument("--data", type=str, required=True, help="Path to dataset.npz")
+    parser.add_argument("--data", type=str, default="/Users/artemlukoyanov/Documents/Proga/Ilumni/playground/SundaiClub/weeks/inkai/ink-ai-hack-playground/notebooks/data/generated/dataset.npz", help="Path to dataset.npz")
     parser.add_argument("--output", type=str, default="checkpoints", help="Output directory")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=32)
