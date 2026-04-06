@@ -243,9 +243,18 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
 
-    # Output dir
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Output dir — create a new numbered subdirectory for each run
+    base_output = Path(args.data).parent / "checkpoints"
+    base_output.mkdir(parents=True, exist_ok=True)
+    existing = [
+        int(p.name.split("_")[1])
+        for p in base_output.iterdir()
+        if p.is_dir() and p.name.startswith("run_") and p.name.split("_")[1].isdigit()
+    ]
+    run_id = max(existing, default=0) + 1
+    output_dir = base_output / f"run_{run_id}"
+    output_dir.mkdir()
+    print(f"Run directory: {output_dir}")
 
     # Training loop
     history = {
