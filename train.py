@@ -12,6 +12,7 @@ from pathlib import Path
 
 import torch
 import torch.optim as optim
+from torch.amp import GradScaler, autocast
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -31,28 +32,38 @@ def make_stroke_input(trajectory):
     return torch.cat([zeros, trajectory[:, :-1, :]], dim=1)
 
 
-def train_one_epoch(model, loader, optimizer, device, epoch, total_epochs):
+def train_one_epoch(model, loader, optimizer, device, epoch, total_epochs, scaler=None):
     model.train()
     total_loss = 0
     total_loc = 0
     total_pen = 0
     n_batches = len(loader)
+    use_amp = scaler is not None
 
     for step, batch in enumerate(loader):
-        image = batch["image"].to(device)
-        trajectory = batch["trajectory"].to(device)
-        lengths = batch["length"].to(device)
+        image = batch["image"].to(device, non_blocking=True)
+        trajectory = batch["trajectory"].to(device, non_blocking=True)
+        lengths = batch["length"].to(device, non_blocking=True)
 
         stroke_in = make_stroke_input(trajectory)
-        mdn_params = model(image, stroke_in)
 
-        loss_dict = mdn_loss(mdn_params, trajectory, lengths)
-        loss = loss_dict["loss"]
+        optimizer.zero_grad(set_to_none=True)
 
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        optimizer.step()
+        with autocast("cuda", enabled=use_amp):
+            mdn_params = model(image, stroke_in)
+            loss_dict = mdn_loss(mdn_params, trajectory, lengths)
+            loss = loss_dict["loss"]
+
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            optimizer.step()
 
         total_loss += loss.item()
         total_loc += loss_dict["loc_loss"].item()
@@ -80,14 +91,17 @@ def validate(model, loader, device):
     total_pen = 0
     n_batches = 0
 
+    use_amp = device.type == "cuda"
+
     for batch in loader:
-        image = batch["image"].to(device)
-        trajectory = batch["trajectory"].to(device)
-        lengths = batch["length"].to(device)
+        image = batch["image"].to(device, non_blocking=True)
+        trajectory = batch["trajectory"].to(device, non_blocking=True)
+        lengths = batch["length"].to(device, non_blocking=True)
 
         stroke_in = make_stroke_input(trajectory)
-        mdn_params = model(image, stroke_in)
-        loss_dict = mdn_loss(mdn_params, trajectory, lengths)
+        with autocast("cuda", enabled=use_amp):
+            mdn_params = model(image, stroke_in)
+            loss_dict = mdn_loss(mdn_params, trajectory, lengths)
 
         total_loss += loss_dict["loss"].item()
         total_loc += loss_dict["loc_loss"].item()
@@ -204,18 +218,26 @@ def main():
     parser.add_argument("--eval_every", type=int, default=5, help="Run sampling eval every N epochs")
     parser.add_argument("--eval_samples", type=int, default=50, help="Number of samples for eval metrics")
     parser.add_argument("--max_samples", type=int, default=None, help="Limit dataset size (for debugging)")
-    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--amp", action="store_true", help="Enable mixed precision (auto-enabled on Ampere+ GPUs)")
+    parser.add_argument("--compile", action="store_true", help="Use torch.compile (PyTorch 2.0+)")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
+        torch.backends.cudnn.benchmark = True
+        gpu_name = torch.cuda.get_device_name()
+        # Detect compute capability for AMP: Ampere (8.0+) has good FP16 tensor cores
+        major, _ = torch.cuda.get_device_capability()
+        amp_supported = major >= 8
+        print(f"Device: {device} ({gpu_name}, compute {major}.x)")
     else:
         device = torch.device("cpu")
-    print(f"Device: {device}")
+        amp_supported = False
+        print(f"Device: {device} (CUDA not available, running on CPU)")
 
     # Data
+    use_cuda = device.type == "cuda"
     train_loader, val_loader, test_loader = create_dataloaders(
         args.data,
         batch_size=args.batch_size,
@@ -223,6 +245,7 @@ def main():
         test_split=args.test_split,
         num_workers=args.num_workers,
         max_samples=args.max_samples,
+        pin_memory=use_cuda,
     )
     print(
         f"Train: {len(train_loader.dataset)} samples, "
@@ -239,9 +262,24 @@ def main():
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model parameters: {num_params:,}")
 
+    # Compile model (PyTorch 2.0+)
+    if args.compile:
+        model = torch.compile(model)
+        print("Model compiled with torch.compile()")
+
     # Optimizer
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+
+    # AMP scaler — only useful on Ampere+ (compute 8.0+), force with --amp
+    use_amp = args.amp or amp_supported
+    scaler = GradScaler("cuda") if use_amp and device.type == "cuda" else None
+    if use_amp and not amp_supported:
+        print("Mixed precision (AMP): enabled (forced via --amp, no tensor cores)")
+    elif use_amp:
+        print("Mixed precision (AMP): enabled (Ampere+ detected)")
+    else:
+        print("Mixed precision (AMP): disabled (pre-Ampere GPU)")
 
     # Output dir — create a new numbered subdirectory for each run
     base_output = Path(args.data).parent / "checkpoints"
@@ -267,7 +305,7 @@ def main():
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
 
-        train_metrics = train_one_epoch(model, train_loader, optimizer, device, epoch, args.epochs)
+        train_metrics = train_one_epoch(model, train_loader, optimizer, device, epoch, args.epochs, scaler=scaler)
         val_metrics = validate(model, val_loader, device)
         scheduler.step(val_metrics["loss"])
 

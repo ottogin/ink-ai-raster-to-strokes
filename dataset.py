@@ -55,9 +55,10 @@ def create_dataloaders(
     batch_size: int = 32,
     val_split: float = 0.1,
     test_split: float = 0.1,
-    num_workers: int = 0,
+    num_workers: int = 4,
     max_samples: int | None = None,
     seed: int = 42,
+    pin_memory: bool = True,
 ):
     """Create train/val/test dataloaders from a single npz file.
 
@@ -75,16 +76,22 @@ def create_dataloaders(
         dataset, [n_train, n_val, n_test], generator=generator,
     )
 
+    persistent = num_workers > 0
+    loader_kwargs = dict(
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
+        prefetch_factor=2 if num_workers > 0 else None,
+    )
+
     train_loader = torch.utils.data.DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, collate_fn=collate_fn,
+        train_ds, batch_size=batch_size, shuffle=True, **loader_kwargs,
     )
     val_loader = torch.utils.data.DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, collate_fn=collate_fn,
+        val_ds, batch_size=batch_size, shuffle=False, **loader_kwargs,
     )
     test_loader = torch.utils.data.DataLoader(
-        test_ds, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, collate_fn=collate_fn,
+        test_ds, batch_size=batch_size, shuffle=False, **loader_kwargs,
     )
     return train_loader, val_loader, test_loader
